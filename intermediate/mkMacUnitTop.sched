@@ -1,0 +1,46 @@
+=== Generated schedule for mkMacUnitTop ===
+
+Method schedule
+---------------
+Method: read
+Ready signal: fifo_mul.i_notFull
+Conflict-free: get_MAC
+Conflicts: read
+ 
+Method: get_MAC
+Ready signal: fifo_result.i_notEmpty
+Conflict-free: read
+Conflicts: get_MAC
+ 
+Rule schedule
+-------------
+Rule: int_Mac_rl_Compute_Int_Mul
+Predicate: int_Mac_fifo_mul.i_notEmpty && int_Mac_fifo_add.i_notFull
+Blocking rules: (none)
+ 
+Rule: int_Mac_rl_Compute_Int_Add
+Predicate: int_Mac_fifo_add.i_notEmpty && int_Mac_fifo_result.i_notFull
+Blocking rules: (none)
+ 
+Rule: bf16_Mac_rl_Compute_bf16_Mul
+Predicate: bf16_Mac_fifo_mul.i_notEmpty && bf16_Mac_fifo_add.i_notFull
+Blocking rules: (none)
+ 
+Rule: bf16_Mac_rl_Compute_bf16_Add
+Predicate: bf16_Mac_fifo_add.i_notEmpty && bf16_Mac_fifo_result.i_notFull
+Blocking rules: (none)
+ 
+Rule: rl_select_mac_output
+Predicate: fifo_mul.i_notEmpty &&
+	   bf16_Mac_fifo_result.i_notEmpty && int_Mac_fifo_result.i_notEmpty
+Blocking rules: (none)
+ 
+Logical execution order: read,
+			 get_MAC,
+			 rl_select_mac_output,
+			 int_Mac_rl_Compute_Int_Mul,
+			 int_Mac_rl_Compute_Int_Add,
+			 bf16_Mac_rl_Compute_bf16_Mul,
+			 bf16_Mac_rl_Compute_bf16_Add
+
+============================================

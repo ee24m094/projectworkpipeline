@@ -4,48 +4,29 @@ package macUnit;
 import FIFO::*;
 import RegFile::*;
 import FIFOF::*;
-import SpecialFIFOs::*;
-//import Reg#(Bit#(16));
+//`include "globalheader.vh"
 
-//structure for multplier
-typedef struct{
-	Bit#(16) val1;
-	Bit#(16) val2;
-	Bit#(16) val3;
-	Bit#(1) s;
-}MultiplierInput deriving(Bits,Eq);
+typedef struct{Bit#(16) input1; Bit#(16) input2; Bit#(32) input3; Bit#(1) select;}MulInp deriving(Bits, Eq);
 
-//structue for Adder
-typedef struct{
-	Bit#(32) val1;
-	Bit#(32) val2;
-	Bit#(1) s;
-}AdderInput deriving(Bits,Eq);	
+typedef struct{Bit#(32) input1; Bit#(32) input2;Bit#(1) select;}AddInp deriving(Bits, Eq);
 
-typedef struct{
-	Bit#(32) val1;
-}AdderOutput deriving(Bits,Eq);
-
+typedef struct{Bit#(32) input1;}AddOut deriving(Bits, Eq);
 
 //Interface declaration for macUnit
 interface MacUnit_Ifc;
-	method Action load_in(MultiplierInput);
-	method ActionValue#(AdderOutput) get_MAC();//To get the result
+	method Action read(MulInp a);
+	//method Action load_B(Bit#(16) b);
+	//method Action load_C(Bit#(32) c);
+	//method Action load_s1_or_s2(Bit#(1) sel); //select between int8 and bf16 mac
+	method ActionValue#(AddOut) get_MAC();//To get the result
 endinterface: MacUnit_Ifc
 
 //Module for Integer MAC Unit
 module mkIntMac(MacUnit_Ifc);
-	//Internal Registers
-	/*Reg#(Bit#(8)) reg_A <- mkReg(0);
-	Reg#(Bit#(8)) reg_B <- mkReg(0);
-	Reg#(Bit#(32)) reg_C <- mkReg(0);
-	Reg#(Bit#(32)) result <- mkReg(0);*/
 	
-	//Declare fifo for the pipeline stages
-	FIFO#(MultiplierInput) multiplier_ififo <- mkPipelineFIFO();
-	FIFO#(AdderInput) adder_ififo <- mkPipelineFIFO();
-	FIFO#(AdderOutput) adder_ofifo <- mkPipelineFIFO();
-	
+	FIFO#(MulInp) fifo_mul <- mkFIFO();
+	FIFO#(AddInp) fifo_add <- mkFIFO();
+	FIFO#(AddOut) fifo_result <- mkFIFO();
 	
 	//function to perform bitwise addition for 32-bit integers
     function Bit#(32) int32_Addition(Bit#(32) a, Bit#(32) b, Bit#(1) cin);
@@ -107,40 +88,47 @@ module mkIntMac(MacUnit_Ifc);
         return result;
     endfunction: int_Multiplication
     
-	rule rl_Compute_Int_Mac;
-		result <= int32_Addition(int_Multiplication(reg_A, reg_B), reg_C,0);
-	endrule:rl_Compute_Int_Mac
+	rule rl_Compute_Int_Mul;
+	MulInp mul = fifo_mul.first();
+	Bit#(8) a = truncate(mul.input1);
+	Bit#(8) b = truncate(mul.input2);
+	Bit#(32) product = int_Multiplication(a,b);
+	AddInp add;
+	add.input1 = product;
+	add.input2 = mul.input3;
+	add.select = mul.select;
+	fifo_mul.deq();
+	fifo_add.enq(add);
+	endrule:rl_Compute_Int_Mul
+	
+	rule rl_Compute_Int_Add;
+	AddInp add= fifo_add.first();
+	Bit#(32) sum = int32_Addition(add.input1,add.input2,0);
+	AddOut result;
+	result.input1=sum;
+	fifo_add.deq();
+	fifo_result.enq(result);
+	endrule:rl_Compute_Int_Add
 
 	//Interface methods to load inputs
-	method Action load_A(Bit#(16) a);
-		load_A_ififo.enq(truncate(a);
-	endmethod
-
-	method Action load_B(Bit#(16) b);
-		load_B_ififo.enqt(runcate(b));
-	endmethod
-
-	method Action load_C(Bit#(32) c);
-		reg_C <= c;
-	endmethod
-	method Action load_s1_or_s2(Bit#(1) sel);
-	//no op	
+	method Action read(MulInp a);
+		fifo_mul.enq(a);
 	endmethod
 
 	//Method to return result
-	method ActionValue#(Bit#(32)) get_MAC();
+	method ActionValue#(AddOut) get_MAC();
+		AddOut result=fifo_result.first();
+		fifo_result.deq();
 		return result;
 	endmethod
 
 endmodule: mkIntMac
-
+//(*synthesize*)
 //BF16 MAC module 
 module mkbf16Mac(MacUnit_Ifc);
-	//Internal Registers
-	Reg#(Bit#(16)) reg_A <- mkReg(0);
-	Reg#(Bit#(16)) reg_B <- mkReg(0);
-	Reg#(Bit#(32)) reg_C <- mkReg(0);
-	Reg#(Bit#(32)) result <- mkReg(0);
+	FIFO#(MulInp) fifo_mul <- mkFIFO();
+	FIFO#(AddInp) fifo_add <- mkFIFO();
+	FIFO#(AddOut) fifo_result <- mkFIFO();
 
 	//function to convert bf16 to fp32
 	function Bit#(32) bf16_to_fp32(Bit#(16) bf16);
@@ -152,7 +140,7 @@ module mkbf16Mac(MacUnit_Ifc);
 		return fp32;
 	endfunction:bf16_to_fp32
 	
-		function Bit#(16) bitwise_Addition_int32(Bit#(16) a, Bit#(16) b, Bit#(1) cin);
+	    function Bit#(16) bitwise_Addition_int32(Bit#(16) a, Bit#(16) b, Bit#(1) cin);
 		Bit#(16) sum = 0;
 		Bit#(17) carry = zeroExtend(cin);
 
@@ -162,9 +150,9 @@ module mkbf16Mac(MacUnit_Ifc);
 		    carry[i+1] = (a[i] & b[i]) | (carry[i] & (a[i] ^ b[i]));
 		end
 		return sum;
-	endfunction: bitwise_Addition_int32
+	    endfunction: bitwise_Addition_int32
 	    
-	function Tuple2#(Bit#(24),Bit#(25)) bitwise_Addition_int23(Bit#(24) a, Bit#(24) b, Bit#(1) cin);
+	    function Tuple2#(Bit#(24),Bit#(25)) bitwise_Addition_int23(Bit#(24) a, Bit#(24) b, Bit#(1) cin);
 		Bit#(24) sum = 0;
 		Bit#(25) carry = zeroExtend(cin);
 
@@ -174,8 +162,10 @@ module mkbf16Mac(MacUnit_Ifc);
 		    carry[i+1] = (a[i] & b[i]) | (carry[i] & (a[i] ^ b[i]));
 		end
 		return tuple2(sum, carry);
-	endfunction: bitwise_Addition_int23
-			//function to perform 24 bit multiplication
+	    endfunction: bitwise_Addition_int23
+
+
+	//function to perform 24 bit multiplication
 	function Bit#(16) multiplication_24bit(Bit#(8) a, Bit#(8) b);
 		Bit#(16) product=0;
 		Bit#(16) temp_a = zeroExtend(a); // Extend a to 32 bits for shift operations
@@ -238,7 +228,7 @@ module mkbf16Mac(MacUnit_Ifc);
 
 	endfunction: multiplication_fp32
 
-		//fp32 addition logic
+	//fp32 addition logic
 	function Bit#(32) fp32_Addition(Bit#(32) a_fp32, Bit#(32) b_fp32);
 		Bit#(1) sign_A = a_fp32[31];
 		Bit#(1) sign_B = b_fp32[31];
@@ -333,38 +323,58 @@ module mkbf16Mac(MacUnit_Ifc);
 	endfunction: fp32_Addition
 	
 	//Rule to compute the result
-	rule rl_compute_bf16_mac;
-		Bit#(32) fp32_A = bf16_to_fp32(reg_A);
-		Bit#(32) fp32_B = bf16_to_fp32(reg_B);
-		result <= fp32_Addition(multiplication_fp32(fp32_A, fp32_B), reg_C);
-	endrule: rl_compute_bf16_mac
-
-	//Interface methods to load inputsS
-	method Action load_A(Bit#(16) a);
-		reg_A <= a;
-	endmethod
-	method Action load_B(Bit#(16) b);
-		reg_B <= b;
-	endmethod
-	method Action load_C(Bit#(32) c);
-		reg_C <= c;
-	endmethod
-	method Action load_s1_or_s2(Bit#(1) sel);
-	//no op	
-	endmethod
+rule rl_Compute_bf16_Mul;
+	MulInp mul = fifo_mul.first();
+	Bit#(16) a = mul.input1;
+	Bit#(16) b = mul.input2;
+	Bit#(32) a1 = bf16_to_fp32(a);
+	Bit#(32) b1 = bf16_to_fp32(b);
 	
-	//method to return result
-	method ActionValue#(Bit#(32)) get_MAC();
+	Bit#(32) product = multiplication_fp32(a1,b1);
+	AddInp add;
+	add.input1 = product;
+	add.input2 = mul.input3;
+	add.select = mul.select;
+	fifo_mul.deq();
+	fifo_add.enq(add);
+	endrule:rl_Compute_bf16_Mul
+	
+	rule rl_Compute_bf16_Add;
+	AddInp add= fifo_add.first();
+	Bit#(32) sum = fp32_Addition(add.input1,add.input2);
+	AddOut result;
+	result.input1=sum;
+	fifo_add.deq();
+	fifo_result.enq(result);
+	endrule:rl_Compute_bf16_Add
+
+	//Interface methods to load inputs
+	method Action read(MulInp a);
+		fifo_mul.enq(a);
+	endmethod
+
+	//Method to return result
+	method ActionValue#(AddOut) get_MAC();
+		AddOut result=fifo_result.first();
+		fifo_result.deq();
 		return result;
 	endmethod
+
 	
 endmodule: mkbf16Mac
 
 //Top level Mac Unit module
+
 (*synthesize*)
+
 module mkMacUnitTop(MacUnit_Ifc);
+	FIFO#(MulInp) fifo_mul <- mkFIFO();
+	FIFO#(AddInp) fifo_add <- mkFIFO();
+	FIFO#(AddOut) fifo_result <- mkFIFO();
+	MulInp mul = fifo_mul.first();
+	Bit#(1) sel = mul.select;
 	//Control bit to select integer mac or float mac
-	Reg#(Bit#(1)) reg_s1_or_s2 <- mkReg(0);
+	//Reg#(Bit#(1)) reg_s1_or_s2 <- mkReg(0);
 
 	//Instantiate Integer mac and bf16mac
 	MacUnit_Ifc int_Mac <- mkIntMac();
@@ -375,70 +385,27 @@ module mkMacUnitTop(MacUnit_Ifc);
 
 	//Rule to compute the selected mac based on s1_or_s2
 	rule rl_select_mac_output;
-		if(reg_s1_or_s2 == 0) begin
+		if(sel == 0) begin
 			let mac_result <- int_Mac.get_MAC();
-			result <= mac_result;
+			result <= mac_result.input1;
 		end else begin
 			let mac_result <- bf16_Mac.get_MAC();
-			result <= mac_result;
+			result <= mac_result.input1;
 		end
 	endrule: rl_select_mac_output
 
-	method Action load_A(Bit#(16) a);
-		if(reg_s1_or_s2 == 0) begin
-			int_Mac.load_A(a);
-		end else begin
-			bf16_Mac.load_A(a);
-		end	
-	endmethod: load_A
 
-	method Action load_B(Bit#(16) b);
-		if(reg_s1_or_s2 == 0) begin
-			int_Mac.load_B(b);
-		end else begin
-			bf16_Mac.load_B(b);
-		end	
-	endmethod: load_B
+	//Interface methods to load inputs
+	method Action read(MulInp a);
+		fifo_mul.enq(a);
+	endmethod
 
-	method Action load_C(Bit#(32) c);
-		if(reg_s1_or_s2 == 0) begin
-			int_Mac.load_C(c);
-		end else begin
-			bf16_Mac.load_C(c);
-		end	
-	endmethod: load_C
-
-	//method to select the innteger mac or fp mac
-	method Action load_s1_or_s2(Bit#(1) sel);
-		reg_s1_or_s2 <= sel;
-	endmethod: load_s1_or_s2
-
-	//method to return selected mac result
-	method ActionValue#(Bit#(32)) get_MAC();
+	//Method to return result
+	method ActionValue#(AddOut) get_MAC();
+		AddOut result=fifo_result.first();
+		fifo_result.deq();
 		return result;
 	endmethod
 endmodule: mkMacUnitTop
 
 endpackage:macUnit
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
